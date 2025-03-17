@@ -39,6 +39,8 @@ import Visibility from '@mui/icons-material/Visibility';
 import VisibilityOff from '@mui/icons-material/VisibilityOff';
 import ClearIcon from '@mui/icons-material/Clear';
 import AddIcon from '@mui/icons-material/Add';
+import ContentCopyIcon from '@mui/icons-material/ContentCopy'; // New: Copy icon
+import VolumeUpIcon from '@mui/icons-material/VolumeUp'; // New: Speaker icon
 import { auth, db } from './firebase'; // Adjust path as needed
 import { signInWithEmailAndPassword, createUserWithEmailAndPassword, signOut, onAuthStateChanged, updateProfile } from 'firebase/auth';
 import { collection, getDocs, addDoc, deleteDoc, doc, updateDoc } from 'firebase/firestore';
@@ -60,7 +62,7 @@ const LeftSection = styled(Box)({
 
 const MiddleSection = styled(Paper)({
   width: '60%',
-  flexGrow: 1, // Take remaining height
+  flexGrow: 1,
   display: 'flex',
   flexDirection: 'column',
   position: 'relative',
@@ -73,12 +75,12 @@ const RightSection = styled(Box)({
   flexDirection: 'column',
   alignItems: 'center',
   padding: '20px',
-  overflowY: 'auto', // Allow scrolling if content overflows
+  overflowY: 'auto',
 });
 
 const ChatContainer = styled(Box)({
   flexGrow: 1,
-  overflowY: 'auto', // Scroll only here
+  overflowY: 'auto',
   padding: '20px 20px 20px 20px',
   display: 'flex',
   flexDirection: 'column',
@@ -94,7 +96,21 @@ const MessageBubble = styled(Box)(({ isUser }) => ({
   alignSelf: isUser ? 'flex-end' : 'flex-start',
   whiteSpace: 'pre-wrap',
   wordBreak: 'break-word',
+  position: 'relative', // For positioning icons
+  '&:hover .message-actions': {
+    opacity: 1, // Show icons on hover for AI messages
+  },
 }));
+
+const MessageActions = styled(Box)({
+  position: 'absolute',
+  bottom: '5px',
+  right: '5px',
+  display: 'flex',
+  gap: '5px',
+  opacity: 0, // Hidden by default
+  transition: 'opacity 0.2s ease',
+});
 
 const GeneratingBubble = styled(Box)({
   alignSelf: 'flex-start',
@@ -194,7 +210,7 @@ const PreviousChatsSidebar = styled(Box)(({ open }) => ({
 
 const CameraPlaceholder = styled(Box)({
   width: '100%',
-  height: '350px', // Kept increased height
+  height: '350px',
   backgroundColor: '#E0E0E0',
   borderRadius: '8px',
   marginBottom: '20px',
@@ -218,18 +234,28 @@ const StyledAppBar = styled(AppBar)({
   left: 0,
   right: 0,
   backgroundColor: '#007ACC',
-  height: '64px', // Explicitly set for clarity
+  height: '64px',
 });
 
 const API_KEY = "b49688c1a8b81f6e2af5039126764bb90f47e3b47e6961c3007960bb42022cdb"; // Secure this in production
 
-const renderContent = (content, isUser) => {
+const renderContent = (content, highlightedIndex, isUser) => {
   const lines = content.split('\n');
   return lines.map((line, index) => {
+    const isHighlighted = index === highlightedIndex;
     if (line.startsWith('*') && line.endsWith('*') && line.length > 2) {
       const text = line.slice(1, -1);
       return (
-        <Typography key={index} variant="subtitle1" sx={{ fontWeight: 'bold', color: isUser ? 'white' : 'black', mb: 1 }}>
+        <Typography
+          key={index}
+          variant="subtitle1"
+          sx={{
+            fontWeight: 'bold',
+            color: isUser ? 'white' : 'black',
+            mb: 1,
+            backgroundColor: isHighlighted ? 'rgba(255, 255, 0, 0.5)' : 'transparent',
+          }}
+        >
           {text}
         </Typography>
       );
@@ -237,13 +263,30 @@ const renderContent = (content, isUser) => {
     if (line.startsWith('----') && line.endsWith('----') && line.length > 8) {
       const text = line.slice(4, -4);
       return (
-        <Typography key={index} variant="h6" sx={{ fontWeight: 'bold', color: isUser ? 'white' : 'black', mb: 1 }}>
+        <Typography
+          key={index}
+          variant="h6"
+          sx={{
+            fontWeight: 'bold',
+            color: isUser ? 'white' : 'black',
+            mb: 1,
+            backgroundColor: isHighlighted ? 'rgba(255, 255, 0, 0.5)' : 'transparent',
+          }}
+        >
           {text}
         </Typography>
       );
     }
     return (
-      <Typography key={index} variant="body1" sx={{ color: isUser ? 'white' : 'black', mb: line.match(/^\d+\.\s|-\s/) ? 1 : 0 }}>
+      <Typography
+        key={index}
+        variant="body1"
+        sx={{
+          color: isUser ? 'white' : 'black',
+          mb: line.match(/^\d+\.\s|-\s/) ? 1 : 0,
+          backgroundColor: isHighlighted ? 'rgba(255, 255, 0, 0.5)' : 'transparent',
+        }}
+      >
         {line}
       </Typography>
     );
@@ -276,9 +319,12 @@ function App() {
   const [stream, setStream] = useState(null);
   const [openNewChatDialog, setOpenNewChatDialog] = useState(false);
   const [newChatName, setNewChatName] = useState('');
+  const [speakingMessageIndex, setSpeakingMessageIndex] = useState(null); // Track which message is being read
+  const [highlightedLineIndex, setHighlightedLineIndex] = useState(-1); // Track highlighted line
   const messageContainerRef = useRef(null);
   const recognitionRef = useRef(null);
   const videoRef = useRef(null);
+  const speechSynthesisRef = useRef(window.speechSynthesis);
 
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
@@ -414,9 +460,8 @@ function App() {
   };
 
   const handleSaveNewChat = async () => {
-    if (!newChatName.trim()) return; // Prevent empty names
+    if (!newChatName.trim()) return;
     if (user) {
-      // For authenticated users, create a new chat in Firebase
       const newChat = {
         name: newChatName,
         messages: [],
@@ -427,7 +472,6 @@ function App() {
       setSelectedChat({ id: chatRef.id, ...newChat });
       setMessages([]);
     } else {
-      // For anonymous users, clear the current chat
       setMessages([]);
       localStorage.setItem('anonymousChat', JSON.stringify([]));
     }
@@ -581,10 +625,59 @@ function App() {
     localStorage.removeItem('anonymousChat');
   };
 
+  const handleCopyMessage = (content) => {
+    navigator.clipboard.writeText(content).then(() => {
+      console.log('Message copied to clipboard');
+    }).catch(err => {
+      console.error('Failed to copy message:', err);
+    });
+  };
+
+  const handleSpeakMessage = (content, messageIndex) => {
+    if (speechSynthesisRef.current.speaking) {
+      speechSynthesisRef.current.cancel();
+      setSpeakingMessageIndex(null);
+      setHighlightedLineIndex(-1);
+      return;
+    }
+
+    setSpeakingMessageIndex(messageIndex);
+    const lines = content.split('\n').filter(line => line.trim());
+    let currentLineIndex = 0;
+
+    const speakLine = () => {
+      if (currentLineIndex >= lines.length) {
+        setSpeakingMessageIndex(null);
+        setHighlightedLineIndex(-1);
+        return;
+      }
+
+      const utterance = new SpeechSynthesisUtterance(lines[currentLineIndex]);
+      utterance.onstart = () => {
+        setHighlightedLineIndex(currentLineIndex);
+      };
+      utterance.onend = () => {
+        currentLineIndex++;
+        speakLine();
+      };
+      utterance.onerror = (event) => {
+        console.error('Speech synthesis error:', event);
+        setSpeakingMessageIndex(null);
+        setHighlightedLineIndex(-1);
+      };
+      speechSynthesisRef.current.speak(utterance);
+    };
+
+    speakLine();
+  };
+
   useEffect(() => {
     return () => {
       if (stream) {
         stream.getTracks().forEach(track => track.stop());
+      }
+      if (speechSynthesisRef.current.speaking) {
+        speechSynthesisRef.current.cancel();
       }
     };
   }, [stream]);
@@ -594,6 +687,7 @@ function App() {
       <StyledAppBar>
         <Toolbar>
           <IconButton edge="start" color="inherit" onClick={() => {}}>
+            {/* Removed ArrowBackIcon */}
           </IconButton>
           <Typography variant="h6" sx={{ flexGrow: 1 }}>
             SignVerse
@@ -644,7 +738,29 @@ function App() {
             )}
             {messages.map((msg, index) => (
               <MessageBubble key={index} isUser={msg.role === 'user'}>
-                {renderContent(msg.content, msg.role === 'user')}
+                {renderContent(
+                  msg.content,
+                  speakingMessageIndex === index ? highlightedLineIndex : -1,
+                  msg.role === 'user'
+                )}
+                {msg.role === 'assistant' && (
+                  <MessageActions className="message-actions">
+                    <IconButton
+                      size="small"
+                      onClick={() => handleCopyMessage(msg.content)}
+                      sx={{ color: 'black' }}
+                    >
+                      <ContentCopyIcon fontSize="small" />
+                    </IconButton>
+                    <IconButton
+                      size="small"
+                      onClick={() => handleSpeakMessage(msg.content, index)}
+                      sx={{ color: 'black' }}
+                    >
+                      <VolumeUpIcon fontSize="small" />
+                    </IconButton>
+                  </MessageActions>
+                )}
               </MessageBubble>
             ))}
             {isGenerating && (
