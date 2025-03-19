@@ -39,11 +39,13 @@ import Visibility from '@mui/icons-material/Visibility';
 import VisibilityOff from '@mui/icons-material/VisibilityOff';
 import ClearIcon from '@mui/icons-material/Clear';
 import AddIcon from '@mui/icons-material/Add';
-import ContentCopyIcon from '@mui/icons-material/ContentCopy'; // New: Copy icon
-import VolumeUpIcon from '@mui/icons-material/VolumeUp'; // New: Speaker icon
-import { auth, db } from './firebase'; // Adjust path as needed
+import ContentCopyIcon from '@mui/icons-material/ContentCopy';
+import VolumeUpIcon from '@mui/icons-material/VolumeUp';
+import { auth, db } from './firebase';
 import { signInWithEmailAndPassword, createUserWithEmailAndPassword, signOut, onAuthStateChanged, updateProfile } from 'firebase/auth';
 import { collection, getDocs, addDoc, deleteDoc, doc, updateDoc } from 'firebase/firestore';
+
+
 
 const Container = styled(Box)({
   display: 'flex',
@@ -86,19 +88,19 @@ const ChatContainer = styled(Box)({
   flexDirection: 'column',
 });
 
-const MessageBubble = styled(Box)(({ isUser }) => ({
-  maxWidth: '60%',
-  padding: '10px 15px',
-  margin: '10px 10px',
-  borderRadius: '12px',
+const MessageBubble = styled(Box, {
+  shouldForwardProp: (prop) => prop !== 'isUser', // Exclude isUser from DOM
+})(({ theme, isUser }) => ({
+  maxWidth: '70%',
+  padding: theme.spacing(1, 2),
+  margin: theme.spacing(1),
+  borderRadius: '20px',
   backgroundColor: isUser ? '#007ACC' : '#E0E0E0',
   color: isUser ? 'white' : 'black',
   alignSelf: isUser ? 'flex-end' : 'flex-start',
-  whiteSpace: 'pre-wrap',
-  wordBreak: 'break-word',
-  position: 'relative', // For positioning icons
+  position: 'relative',
   '&:hover .message-actions': {
-    opacity: 1, // Show icons on hover for AI messages
+    visibility: 'visible',
   },
 }));
 
@@ -239,6 +241,8 @@ const StyledAppBar = styled(AppBar)({
 
 const API_KEY = "b49688c1a8b81f6e2af5039126764bb90f47e3b47e6961c3007960bb42022cdb"; // Secure this in production
 
+// const PICOVOICE_ACCESS_KEY = 'QjVMUSxginiYm9zoniWsae7UnUJTsZQenr4zeVWq1C8TBYc31TFmKQ=='; // Secure this in production
+
 const renderContent = (content, highlightedIndex, isUser) => {
   const lines = content.split('\n');
   return lines.map((line, index) => {
@@ -294,6 +298,7 @@ const renderContent = (content, highlightedIndex, isUser) => {
 };
 
 function App() {
+  // ... (All existing state unchanged)
   const [user, setUser] = useState(null);
   const [openAuthDialog, setOpenAuthDialog] = useState(false);
   const [isLogin, setIsLogin] = useState(true);
@@ -319,12 +324,14 @@ function App() {
   const [stream, setStream] = useState(null);
   const [openNewChatDialog, setOpenNewChatDialog] = useState(false);
   const [newChatName, setNewChatName] = useState('');
-  const [speakingMessageIndex, setSpeakingMessageIndex] = useState(null); // Track which message is being read
-  const [highlightedLineIndex, setHighlightedLineIndex] = useState(-1); // Track highlighted line
+  const [speakingMessageIndex, setSpeakingMessageIndex] = useState(null);
+  const [highlightedLineIndex, setHighlightedLineIndex] = useState(-1);
   const messageContainerRef = useRef(null);
   const recognitionRef = useRef(null);
-  const videoRef = useRef(null);
   const speechSynthesisRef = useRef(window.speechSynthesis);
+  const videoRef = useRef(null);
+  const [isVoiceEnabled, setIsVoiceEnabled] = useState(false);
+  const [isListeningForCommand, setIsListeningForCommand] = useState(false);
 
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
@@ -360,27 +367,104 @@ function App() {
     setTimeout(scrollToBottom, 0);
   }, [messages, isGenerating]);
 
-  useEffect(() => {
-    if ('SpeechRecognition' in window || 'webkitSpeechRecognition' in window) {
-      const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-      recognitionRef.current = new SpeechRecognition();
-      recognitionRef.current.continuous = false;
-      recognitionRef.current.interimResults = false;
-      recognitionRef.current.onresult = (event) => {
-        const transcript = event.results[0][0].transcript;
-        setMessageInput(transcript);
-        setIsRecording(false);
-      };
-      recognitionRef.current.onend = () => setIsRecording(false);
-      recognitionRef.current.onerror = (event) => {
-        console.error('Speech recognition error:', event.error);
-        setIsRecording(false);
-      };
-    }
-    return () => {
-      if (recognitionRef.current) recognitionRef.current.stop();
+
+ // Updated Speech Recognition useEffect
+ useEffect(() => {
+  if ('SpeechRecognition' in window || 'webkitSpeechRecognition' in window) {
+    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+    recognitionRef.current = new SpeechRecognition();
+    recognitionRef.current.continuous = true;
+    recognitionRef.current.interimResults = false;
+    recognitionRef.current.lang = 'en-US';
+
+    let isRecognitionActive = false;
+
+    const attemptRestart = () => {
+      if (!isGenerating && !isRecognitionActive && isVoiceEnabled) {
+        setTimeout(() => {
+          if (!isRecognitionActive) {
+            try {
+              recognitionRef.current.stop();
+              recognitionRef.current.start();
+            } catch (err) {
+              console.error('❌ Failed to restart recognition:', err);
+            }
+          }
+        }, 500);
+      }
     };
-  }, []);
+
+    recognitionRef.current.onstart = () => {
+      isRecognitionActive = true;
+      console.log('🎙️ Speech recognition started');
+    };
+
+    recognitionRef.current.onresult = (event) => {
+      const transcript = event.results[event.resultIndex][0].transcript.trim().toLowerCase();
+      console.log(`🎤 Heard: "${transcript}"`);
+
+      if (!isVoiceEnabled) return;
+
+      if (transcript.startsWith('hey alex')) {
+        console.log('🚀 "Hey Alex" detected!');
+        setMessages(prev => [...prev, { role: 'assistant', content: 'Hi, how can I help you?' }]);
+        setIsListeningForCommand(true);
+        speechSynthesisRef.current.cancel();
+        const greeting = new SpeechSynthesisUtterance('Hi, how can I help you?');
+        greeting.volume = 1.0;
+        greeting.rate = 1.0;
+        greeting.pitch = 1.0;
+        greeting.onstart = () => console.log('🔊 Speaking: "Hi, how can I help you?"');
+        greeting.onend = () => {
+          console.log('🔊 Finished speaking greeting');
+        };
+        greeting.onerror = (err) => console.error('❌ Speech synthesis error:', err);
+        speechSynthesisRef.current.speak(greeting);
+      } else if (isListeningForCommand) {
+        console.log(`✅ Command received: "${transcript}"`);
+        handleSendMessage(transcript);
+        setIsListeningForCommand(false);
+      }
+    };
+
+    recognitionRef.current.onend = () => {
+      isRecognitionActive = false;
+      console.log('🎙️ Speech recognition ended');
+      attemptRestart();
+    };
+
+    recognitionRef.current.onerror = (err) => {
+      console.error('❌ Speech recognition error:', err);
+      isRecognitionActive = false;
+      if (err.error !== 'aborted' && err.error !== 'not-allowed') {
+        attemptRestart();
+      }
+    };
+
+    if (isVoiceEnabled && !isRecognitionActive) {
+      try {
+        recognitionRef.current.start();
+      } catch (err) {
+        console.error('❌ Initial start failed:', err);
+      }
+    }
+
+    return () => {
+      if (recognitionRef.current) {
+        recognitionRef.current.stop();
+        isRecognitionActive = false;
+        console.log('🧹 Cleanup: Stopped speech recognition');
+      }
+      if (speechSynthesisRef.current.speaking) {
+        speechSynthesisRef.current.cancel();
+      }
+    };
+  } else {
+    console.error('❌ SpeechRecognition not supported in this browser');
+  }
+}, [isGenerating, isVoiceEnabled]);
+
+
 
   useEffect(() => {
     if (isCameraOn && stream && videoRef.current) {
@@ -479,93 +563,147 @@ function App() {
     handleCloseNewChatDialog();
   };
 
-  const handleSendMessage = async () => {
-    if (!messageInput.trim()) return;
+  const handleSendMessage = async (message) => {
+    if (!message.trim()) return;
 
-    const userMessage = { role: 'user', content: messageInput };
+    const userMessage = { role: 'user', content: message };
     let updatedMessages = [...messages, userMessage];
     setMessages(updatedMessages);
     setMessageInput('');
     setIsGenerating(true);
+    console.log('📤 Sending message:', message);
 
     if (user && selectedChat) {
       const chatRef = doc(db, 'chats', user.uid, 'chatBot', selectedChat.id);
       await updateDoc(chatRef, { messages: updatedMessages });
+    } else if (!user) {
+      localStorage.setItem('anonymousChat', JSON.stringify(updatedMessages));
     }
 
-    const response = await fetch('https://api.together.xyz/v1/chat/completions', {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${API_KEY}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        model: 'meta-llama/Llama-3.3-70B-Instruct-Turbo',
-        messages: [
-          { role: 'system', content: 'You are a helpful assistant.' },
-          ...updatedMessages,
-        ],
-        max_tokens: 1024,
-        temperature: 0.7,
-        top_p: 0.7,
-        top_k: 50,
-        repetition_penalty: 1.0,
-        stop: ['<|eot_id|>', '<|eom_id|>'],
-        stream: true,
-      }),
-    });
+    try {
+      console.log('🌐 Making API request...');
+      const response = await fetch('https://api.together.xyz/v1/chat/completions', {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${API_KEY}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          model: 'meta-llama/Llama-3.3-70B-Instruct-Turbo',
+          messages: [
+            { role: 'system', content: 'You are a helpful assistant.' },
+            ...updatedMessages,
+          ],
+          max_tokens: 1024,
+          temperature: 0.7,
+          top_p: 0.7,
+          top_k: 50,
+          repetition_penalty: 1.0,
+          stop: ['<|eot_id|>', '<|eom_id|>'],
+          stream: true,
+        }),
+      });
 
-    const reader = response.body.getReader();
-    const decoder = new TextDecoder();
-    let aiMessageContent = '';
-    let aiMessageIndex = updatedMessages.length;
+      if (!response.ok) {
+        throw new Error(`API request failed with status: ${response.status}`);
+      }
 
-    updatedMessages = [...updatedMessages, { role: 'assistant', content: '' }];
-    setMessages(updatedMessages);
+      console.log('📥 Receiving API stream...');
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let aiMessageContent = '';
+      let aiMessageIndex = updatedMessages.length;
 
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
+      updatedMessages = [...updatedMessages, { role: 'assistant', content: '' }];
+      setMessages(updatedMessages);
 
-      const chunk = decoder.decode(value, { stream: true });
-      const lines = chunk.split('\n').filter(line => line.trim() !== '');
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) {
+          console.log('✅ Stream complete');
+          break;
+        }
 
-      for (const line of lines) {
-        if (line.startsWith('data: ') && line !== 'data: [DONE]') {
-          try {
-            const data = JSON.parse(line.slice(6));
-            const content = data.choices && data.choices[0] && data.choices[0].delta && data.choices[0].delta.content;
-            if (content) {
-              aiMessageContent += content;
-              const formattedContent = aiMessageContent
-                .replace(/\*([^*]+)\*/g, '$1')
-                .replace(/----([^-\n]+)----/g, '$1')
-                .replace(/(\d+\.\s|\-\s)/g, '\n$1');
-              updatedMessages[aiMessageIndex] = { role: 'assistant', content: formattedContent };
-              setMessages([...updatedMessages]);
+        const chunk = decoder.decode(value, { stream: true });
+        const lines = chunk.split('\n').filter(line => line.trim() !== '');
+
+        for (const line of lines) {
+          if (line.startsWith('data: ') && line !== 'data: [DONE]') {
+            try {
+              const data = JSON.parse(line.slice(6));
+              const content = data.choices && data.choices[0] && data.choices[0].delta && data.choices[0].delta.content;
+              if (content) {
+                aiMessageContent += content;
+                const formattedContent = aiMessageContent
+                  .replace(/\*([^*]+)\*/g, '$1')
+                  .replace(/----([^-\n]+)----/g, '$1')
+                  .replace(/(\d+\.\s|\-\s)/g, '\n$1');
+                updatedMessages[aiMessageIndex] = { role: 'assistant', content: formattedContent };
+                setMessages([...updatedMessages]);
+              }
+            } catch (error) {
+              console.error('❌ Error parsing JSON chunk:', error, 'Chunk:', line);
+              continue;
             }
-          } catch (error) {
-            console.error('Error parsing JSON chunk:', error, 'Chunk:', line);
-            continue;
           }
         }
       }
-    }
 
-    setIsGenerating(false);
-    if (aiMessageContent) {
-      let formattedContent = aiMessageContent
-        .replace(/\*([^*]+)\*/g, '$1')
-        .replace(/----([^-\n]+)----/g, '$1')
-        .replace(/(\d+\.\s|\-\s)/g, '\n$1');
-      const finalMessages = [...updatedMessages.slice(0, -1), { role: 'assistant', content: formattedContent }];
-      if (formattedContent.length >= 1024) {
-        finalMessages[finalMessages.length - 1].content += '\n... [response truncated due to length]';
+      if (aiMessageContent) {
+        let formattedContent = aiMessageContent
+          .replace(/\*([^*]+)\*/g, '$1')
+          .replace(/----([^-\n]+)----/g, '$1')
+          .replace(/(\d+\.\s|\-\s)/g, '\n$1');
+        const finalMessages = [...updatedMessages.slice(0, -1), { role: 'assistant', content: formattedContent }];
+        if (formattedContent.length >= 1024) {
+          finalMessages[finalMessages.length - 1].content += '\n... [response truncated due to length]';
+        }
+        setMessages(finalMessages);
+
+        if (user && selectedChat) {
+          await updateDoc(doc(db, 'chats', user.uid, 'chatBot', selectedChat.id), { messages: finalMessages });
+        } else if (!user) {
+          localStorage.setItem('anonymousChat', JSON.stringify(finalMessages));
+        }
+
+        console.log('🔊 Preparing to speak response:', formattedContent.slice(0, 50) + '...');
+        speechSynthesisRef.current.cancel();
+        const responseUtterance = new SpeechSynthesisUtterance(formattedContent);
+        responseUtterance.volume = 1.0;
+        responseUtterance.rate = 1.0;
+        responseUtterance.pitch = 1.0;
+        responseUtterance.onstart = () => console.log(`🔊 Speaking response: "${formattedContent.slice(0, 50)}..."`);
+        responseUtterance.onend = () => console.log('🔊 Finished speaking response');
+        responseUtterance.onerror = (err) => console.error('❌ Response speech error:', err);
+        speechSynthesisRef.current.speak(responseUtterance);
+      } else {
+        console.warn('⚠️ No AI response content received');
       }
-      setMessages(finalMessages);
+    } catch (err) {
+      console.error('❌ Error in handleSendMessage:', err);
+      const errorMessage = { role: 'assistant', content: 'Sorry, I encountered an error.' };
+      updatedMessages = [...updatedMessages, errorMessage];
+      setMessages(updatedMessages);
       if (user && selectedChat) {
-        await updateDoc(doc(db, 'chats', user.uid, 'chatBot', selectedChat.id), { messages: finalMessages });
+        await updateDoc(doc(db, 'chats', user.uid, 'chatBot', selectedChat.id), { messages: updatedMessages });
+      } else if (!user) {
+        localStorage.setItem('anonymousChat', JSON.stringify(updatedMessages));
       }
+    } finally {
+      setIsGenerating(false);
+      console.log('🏁 handleSendMessage complete');
+    }
+  };
+
+  // New function to enable voice after user interaction
+  const handleEnableVoice = () => {
+    if (!isVoiceEnabled) {
+      setIsVoiceEnabled(true);
+      // Test speech synthesis to ensure it works
+      const testUtterance = new SpeechSynthesisUtterance('Voice enabled');
+      testUtterance.volume = 1.0;
+      testUtterance.onend = () => console.log('🔊 Voice enabled test complete');
+      speechSynthesisRef.current.speak(testUtterance);
     }
   };
 
@@ -736,6 +874,13 @@ function App() {
                 </ClearChatButton>
               </Box>
             )}
+            {!isVoiceEnabled && (
+              <Box sx={{ display: 'flex', justifyContent: 'center', mb: 2 }}>
+                <CapsuleButton onClick={handleEnableVoice}>
+                  Enable Voice Assistant
+                </CapsuleButton>
+              </Box>
+            )}
             {messages.map((msg, index) => (
               <MessageBubble key={index} isUser={msg.role === 'user'}>
                 {renderContent(
@@ -830,7 +975,7 @@ function App() {
           </Box>
           <List>
             {chats.map(chat => (
-              <ListItem button key={chat.id} onClick={() => handleSelectChat(chat)}>
+              <ListItem key={chat.id} onClick={() => handleSelectChat(chat)}>
                 <ListItemText primary={chat.name} />
                 <ListItemSecondaryAction>
                   <IconButton edge="end" onClick={() => handleDeleteChat(chat.id)}>
@@ -843,6 +988,7 @@ function App() {
         </PreviousChatsSidebar>
       </Container>
 
+      {/* ... (Dialogs unchanged) */}
       <Dialog open={openAuthDialog} onClose={() => !loading && setOpenAuthDialog(false)}>
         <DialogTitle>{isLogin ? 'Login to SignVerse' : 'Sign Up for SignVerse'}</DialogTitle>
         <DialogContent>
